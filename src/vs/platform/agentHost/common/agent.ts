@@ -207,6 +207,12 @@ export interface IAgentImportChatOptions {
 	 * otherwise block the chat for good.
 	 */
 	readonly takeOver?: boolean;
+	/**
+	 * The host already had the chat loaded, so the provider's copy may predate
+	 * turns another client ran since. Reload the chat from storage when that
+	 * may be the case.
+	 */
+	readonly reloadIfStale?: boolean;
 }
 
 /** The selection an imported chat continues with, as its provider's runtime restored it. */
@@ -214,6 +220,8 @@ export interface IAgentImportedChat {
 	readonly model: ModelSelection | undefined;
 	/** `undefined` when the chat runs without a custom agent, or with one this host does not offer. */
 	readonly agent: AgentSelection | undefined;
+	/** The provider reloaded the chat from storage, so the turns the host has for it may be out of date. */
+	readonly reloaded?: boolean;
 }
 
 /** A fresh provider transcript for a chat being observed without running a host turn. */
@@ -515,8 +523,8 @@ export type IAgentCustomizationInstallationApplyResult =
 	| { readonly kind: 'receipt'; readonly installationId: string }
 	| { readonly kind: 'plugin'; readonly name: string; readonly repository: string; readonly ref: string; readonly path: string };
 
-/** Where a configured MCP value is applied. Only remote categories reach prompts. */
-export type AgentCustomizationInstallationValueCategory = 'header' | 'url-variable';
+/** Where a configured MCP value is applied: remote headers and URL variables, or a local package's environment and arguments. */
+export type AgentCustomizationInstallationValueCategory = 'header' | 'url-variable' | 'environment-variable' | 'runtime-argument' | 'package-argument';
 
 /** One non-secret value a transport choice needs. All text fields are untrusted plain text. */
 export interface IAgentCustomizationInstallationValuePrompt {
@@ -540,12 +548,16 @@ export interface IAgentCustomizationInstallationSecretPrompt {
 	readonly title?: string;
 }
 
-/** One remote transport choice a configuration request offers. */
+/** One transport choice a configuration request offers. */
 export interface IAgentCustomizationInstallationChoice {
 	readonly choiceId: string;
 	readonly transport: string;
 	/** The plan's endpoint summary, which may already include substituted defaults. Not a template. */
 	readonly endpointSummary?: string;
+	/** For a local package, the command it runs, with values still to be supplied shown as `${input:…}` placeholders. */
+	readonly command?: string;
+	/** For a local package, the environment it runs with, in the same form as {@link command}. */
+	readonly env?: Readonly<Record<string, string>>;
 	/** Names of the configuration fields this choice would set, without their values. */
 	readonly configurationFields: readonly string[];
 	readonly values: readonly IAgentCustomizationInstallationValuePrompt[];
@@ -585,7 +597,7 @@ export type IAgentCustomizationInstallationPreparation = IAgentCustomizationInst
 /** The user's answers to a configuration request. The only DTO that carries submitted values or secrets. */
 export interface IAgentCustomizationInstallationAnswers {
 	readonly choiceId: string;
-	/** At most one entry per `(category, key)`. */
+	/** One entry per `(category, key)`, except values declared `isRepeated`, which may have several, in order. */
 	readonly inputs: readonly { readonly key: string; readonly category: AgentCustomizationInstallationValueCategory; readonly value: string }[];
 	/** One entry per exact plan placeholder. */
 	readonly secrets: readonly { readonly placeholder: string; readonly value: string }[];
@@ -1383,6 +1395,12 @@ export interface IAgentChats {
 	prepareChat?(chat: URI, context: AgentChatOperationContext): Promise<IAgentPrepareChatResult>;
 
 	/**
+	 * Returns the input restriction recorded when `getMessages` recovered history read-only after a resume failure.
+	 * Providers implementing this are only prepared when they report a restriction or the host already tracks an input state for the chat.
+	 */
+	getInputRestriction?(chat: URI): ErrorInfo | undefined;
+
+	/**
 	 * Optionally starts the runtime of a chat that was created with a deferred
 	 * backing ({@link IAgentCreateChatResult.provisional}) before its first send,
 	 * so its MCP servers and plugins load while the user composes. The warm
@@ -1416,6 +1434,12 @@ export interface IAgentChats {
 
 	/** Return whether the addressed chat can currently release its in-memory backing. */
 	canReleaseChat?(chat: URI, context: AgentChatOperationContext): Promise<boolean>;
+
+	/**
+	 * Whether the provider's runtime marks the chat as in use while this host has it loaded, so another client asks
+	 * before continuing it. The host releases a session with such a chat shortly after no client observes it.
+	 */
+	isChatHeldInUse?(chat: URI): boolean;
 
 	/** Release the addressed chat's in-memory backing without deleting durable data. */
 	releaseChat(chat: URI, context: AgentChatOperationContext, options?: IAgentChatReleaseOptions): Promise<void>;
@@ -2240,7 +2264,10 @@ export interface IAgent {
 	 * chat off may still be exiting. A provider may also align
 	 * the chat's configuration with the state its runtime persisted for the chat,
 	 * and returns the model and agent the chat continues with so the host can
-	 * offer them for the next turn.
+	 * offer them for the next turn. With {@link IAgentImportChatOptions.reloadIfStale},
+	 * a provider whose loaded copy of the chat may be out of date reloads it from
+	 * storage and reports {@link IAgentImportedChat.reloaded}, so the host rebuilds
+	 * the chat's turns.
 	 */
 	importChat?(chat: URI, context: IAgentChatContext, options?: IAgentImportChatOptions): Promise<IAgentImportedChat | void>;
 

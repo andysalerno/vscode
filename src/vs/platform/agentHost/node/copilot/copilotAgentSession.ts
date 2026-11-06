@@ -1386,6 +1386,7 @@ export class CopilotAgentSession extends Disposable {
 	private readonly _idleWaiters = new Set<DeferredPromise<boolean>>();
 	private readonly _completedTokenUsage = new Map<string, IAgentTurnTokenUsage>();
 	private _hasCompletedTurn = false;
+	private _hasSentTurn = false;
 	private _completedTurnHistory: Promise<boolean> | undefined;
 	private readonly _subagentObservedTokenUsage = new LRUCache<string, ObservedTokenUsage>(256);
 	private readonly _observedUsageEventIds = new Set<string>();
@@ -1420,6 +1421,11 @@ export class CopilotAgentSession extends Disposable {
 	 */
 	get hasActiveTurn(): boolean { return this._currentTurn.value !== undefined; }
 	get hasCompletedTurn(): boolean { return this._hasCompletedTurn; }
+	/**
+	 * Whether the runtime marks this session as in use by this process, so another client asks before continuing it. It
+	 * does from creation, and for a resumed session from the first turn sent after resuming.
+	 */
+	get isHeldInUse(): boolean { return this._launchPlan.kind === 'create' || this._hasSentTurn; }
 	/** Reuses persisted history to distinguish restored chats from a chat's first turn. */
 	get completedTurnHistory(): Promise<boolean> | undefined {
 		return this._launchPlan.kind === 'resume'
@@ -2132,6 +2138,8 @@ export class CopilotAgentSession extends Disposable {
 	private readonly _surfacedProvisionalFusionToolCallIds = new Set<string>();
 	/** Provisional Fusion messages already shown in a phase chat; their committed copies only update accounting unless they are the answer. */
 	private readonly _shownProvisionalFusionMessageIds = new Set<string>();
+	/** Fusion reasoning already shown, by message and text, so a message's committed copy doesn't show it again. */
+	private readonly _shownFusionReasoning = new Set<string>();
 	/** `task_complete` calls already shown in a provisional phase, reported again when their phase commits. */
 	private readonly _provisionalFusionTaskCompletions = new Map<string, ITaskCompletion>();
 	/**
@@ -2751,6 +2759,8 @@ export class CopilotAgentSession extends Disposable {
 			this._logService.warn(`[Copilot:${this.sessionId}] Ignoring provider-initiated user.message without messageId and turnId`);
 			return;
 		}
+		// The runtime holds a resumed session in use from its first execution, whoever starts it.
+		this._hasSentTurn = true;
 
 		const turnId = generateUuid();
 		this._emitAction({
@@ -6713,6 +6723,7 @@ export class CopilotAgentSession extends Disposable {
 		if (turn) {
 			turn.sdkSendInvoked = true;
 		}
+		this._hasSentTurn = true;
 		recorder?.markMilestone?.('sdkSend');
 		try {
 			const result = await measureAgentProviderOperation(recorder, 'sdkSend', operation);
@@ -10064,9 +10075,26 @@ export class CopilotAgentSession extends Disposable {
 			this._emitMarkdownDelta(e.data.deltaContent, this._parentToolCallIdForSubagentEvent(e));
 		}));
 
+		// Fusion phases stream no reasoning deltas, so a phase's reasoning arrives only with its complete message.
+		const renderFusionReasoning = (e: SessionEventPayload<'assistant.message'>, contentParentToolCallId: string | undefined): void => {
+			const reasoning = e.data.reasoningText;
+			const key = JSON.stringify([e.data.messageId, reasoning]);
+			if (!reasoning || this._shownFusionReasoning.has(key)) {
+				return;
+			}
+			this._shownFusionReasoning.add(key);
+			this._emitAction({
+				type: ActionType.ChatResponsePart,
+				turnId: this._turnId,
+				part: { kind: ResponsePartKind.Reasoning, id: generateUuid(), content: reasoning },
+			}, contentParentToolCallId);
+		};
 		const renderMessage = (e: SessionEventPayload<'assistant.message'>, contentParentToolCallId: string | undefined, isLastMessageChunk: boolean, isFusionMessage = false): void => {
 			if (this._shouldDropLateRootTurnEvent('assistant.message')) {
 				return;
+			}
+			if (isFusionMessage) {
+				renderFusionReasoning(e, contentParentToolCallId);
 			}
 			const markdownScope = contentParentToolCallId ?? '';
 			const state = this._getResponsePartState(contentParentToolCallId);
@@ -10862,6 +10890,11 @@ export class CopilotAgentSession extends Disposable {
 						for (const chunk of call.messages) {
 							this._shownProvisionalFusionMessageIds.add(chunk.data.messageId);
 							renderMessage(chunk, undefined, isLastAssistantMessageChunk(chunk), true);
+						}
+					} else if (call) {
+						// The answer waits for the commit, but its reasoning shows the phase is making progress.
+						for (const chunk of call.messages) {
+							renderFusionReasoning(chunk, undefined);
 						}
 					}
 					return;
@@ -12703,6 +12736,7 @@ export class CopilotAgentSession extends Disposable {
 		this._provisionalFusionToolStarts.clear();
 		this._surfacedProvisionalFusionToolCallIds.clear();
 		this._shownProvisionalFusionMessageIds.clear();
+		this._shownFusionReasoning.clear();
 		this._provisionalFusionTaskCompletions.clear();
 		this._pendingFusionMessageChunks.clear();
 		this._provisionalInlineFusionMessageChunks.clear();

@@ -871,7 +871,7 @@ export interface IMissionControlOptions {
 	readonly cloneRoot?: string;
 	readonly live?: boolean;
 	readonly requireConnectionBinding?: boolean;
-	/** Explicit host-owner opt-in to use local Copilot credentials for same-owner relay clients. */
+	/** Uses host GitHub and Copilot credentials for same-owner relay clients. */
 	readonly useLocalCredentials?: boolean;
 	/** Explicit host-owner testing override; omit device remote-control policy from Mission Control registration. */
 	readonly ignoreRemoteControlPolicy?: boolean;
@@ -1335,8 +1335,8 @@ export interface IAgentService {
 	onResourceWatchUnsubscribed(channel: string): boolean;
 }
 
-/** Options for {@link IAgentService.importSession}. */
-export type IAgentImportSessionOptions = IAgentImportChatOptions;
+/** Options for {@link IAgentService.importSession}. Whether to reload a loaded chat is the host's decision. */
+export type IAgentImportSessionOptions = Pick<IAgentImportChatOptions, 'takeOver'>;
 
 /**
  * Consumer-facing connection to an agent host. Session handlers, terminal

@@ -278,5 +278,5 @@
   "optionalDependencies": {
     "windows-foreground-love": "0.6.1"
   },
-  "copilotRuntimeVersion": "1.0.114"
+  "copilotRuntimeVersion": "0.0.0-dev"
 }

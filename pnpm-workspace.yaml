@@ -130,6 +130,8 @@ allowBuilds:
   utf-8-validate@5.0.10: true
   windows-foreground-love@0.6.1: true
 overrides:
+  '@microsoft/copilot-sdk': file:../copilot-sdk-local/microsoft-copilot-sdk-0.0.0-dev.tgz
+  '@microsoft/copilot-sdk-linux-x64': file:../copilot-sdk-local/microsoft-copilot-sdk-linux-x64-0.0.0-dev.tgz
   node-gyp-build: 4.8.1
   kerberos@2.1.1>node-addon-api: 7.1.0
   koffi: 3.2.1
